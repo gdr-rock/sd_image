@@ -1,5 +1,4 @@
 import argparse
-import math
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -7,6 +6,7 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 import torch
+from huggingface_hub import snapshot_download
 from PIL import Image, ImageOps
 from diffusers import (
     ControlNetModel,
@@ -23,6 +23,41 @@ from diffusers import (
 DEFAULT_TXT2IMG_MODEL = "runwayml/stable-diffusion-v1-5"
 DEFAULT_INPAINT_MODEL = "runwayml/stable-diffusion-inpainting"
 DEFAULT_CONTROLNET_MODEL = "lllyasviel/control_v11p_sd15_canny"
+
+
+def has_model_weights(path: Path) -> bool:
+    weight_names = (
+        "diffusion_pytorch_model.safetensors",
+        "diffusion_pytorch_model.bin",
+        "model.safetensors",
+        "pytorch_model.bin",
+    )
+    return any((path / weight_name).exists() for weight_name in weight_names)
+
+
+def is_complete_diffusers_snapshot(path: Path) -> bool:
+    required_dirs = ["unet", "vae", "text_encoder"]
+    if not (path / "model_index.json").exists():
+        return False
+    for directory in required_dirs:
+        if not has_model_weights(path / directory):
+            return False
+    return True
+
+
+def resolve_model_source(model_id_or_path: str) -> tuple[str, bool]:
+    candidate = Path(model_id_or_path)
+    if candidate.exists():
+        return str(candidate), is_complete_diffusers_snapshot(candidate) if candidate.is_dir() else True
+
+    try:
+        cached_path = snapshot_download(repo_id=model_id_or_path, local_files_only=True)
+        cached_dir = Path(cached_path)
+        if is_complete_diffusers_snapshot(cached_dir):
+            return cached_path, True
+        return model_id_or_path, False
+    except Exception:
+        return model_id_or_path, False
 
 
 def parse_args() -> argparse.Namespace:
@@ -151,27 +186,34 @@ def build_pipeline(args: argparse.Namespace, torch_dtype: torch.dtype):
     model_id = args.model_id
     if model_id is None:
         model_id = DEFAULT_INPAINT_MODEL if args.mode == "inpaint" else DEFAULT_TXT2IMG_MODEL
+    model_source, model_is_local = resolve_model_source(model_id)
 
     common_kwargs = {
         "torch_dtype": torch_dtype,
         "safety_checker": None,
+        "local_files_only": model_is_local,
     }
 
     if use_controlnet:
-        controlnet = ControlNetModel.from_pretrained(args.controlnet_model, torch_dtype=torch_dtype)
+        controlnet_source, controlnet_is_local = resolve_model_source(args.controlnet_model)
+        controlnet = ControlNetModel.from_pretrained(
+            controlnet_source,
+            torch_dtype=torch_dtype,
+            local_files_only=controlnet_is_local,
+        )
         if args.mode == "txt2img":
-            pipe = StableDiffusionControlNetPipeline.from_pretrained(model_id, controlnet=controlnet, **common_kwargs)
+            pipe = StableDiffusionControlNetPipeline.from_pretrained(model_source, controlnet=controlnet, **common_kwargs)
         elif args.mode == "img2img":
-            pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(model_id, controlnet=controlnet, **common_kwargs)
+            pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(model_source, controlnet=controlnet, **common_kwargs)
         else:
-            pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(model_id, controlnet=controlnet, **common_kwargs)
+            pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(model_source, controlnet=controlnet, **common_kwargs)
     else:
         if args.mode == "txt2img":
-            pipe = StableDiffusionPipeline.from_pretrained(model_id, **common_kwargs)
+            pipe = StableDiffusionPipeline.from_pretrained(model_source, **common_kwargs)
         elif args.mode == "img2img":
-            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(model_id, **common_kwargs)
+            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(model_source, **common_kwargs)
         else:
-            pipe = StableDiffusionInpaintPipeline.from_pretrained(model_id, **common_kwargs)
+            pipe = StableDiffusionInpaintPipeline.from_pretrained(model_source, **common_kwargs)
 
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     pipe.set_progress_bar_config(disable=False)

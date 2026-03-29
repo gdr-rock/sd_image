@@ -325,6 +325,7 @@ def toggle_sd_fields(mode: str):
     return (
         gr.update(visible=mode == "img2img"),
         gr.update(visible=is_inpaint),
+        gr.update(visible=is_inpaint),
         gr.update(visible=not is_txt2img),
     )
 
@@ -376,7 +377,10 @@ def build_app():
                         eraser=gr.Eraser(default_size=24),
                         layers=True,
                         transforms=["crop", "resize"],
-                        info="Upload the source image here, then paint white over the region you want to edit. White changes, untouched areas stay protected.",
+                    )
+                    inpaint_editor_help = gr.Markdown(
+                        "Upload the source image here, then paint white over the region you want to edit. White changes, untouched areas stay protected.",
+                        visible=False,
                     )
                     control_image = gr.Image(
                         type="filepath",
@@ -464,8 +468,8 @@ def build_app():
                         eraser=gr.Eraser(default_size=24),
                         layers=True,
                         transforms=["crop", "resize"],
-                        info="Upload the image here, then paint white over objects you want LaMa to remove.",
                     )
+                    gr.Markdown("Upload the image here, then paint white over objects you want LaMa to remove.")
                     run_lama_button = gr.Button("Run LaMa cleanup", variant="primary")
                 with gr.Column(scale=1):
                     gr.Markdown(
@@ -513,7 +517,7 @@ def build_app():
         mode.change(
             toggle_sd_fields,
             inputs=mode,
-            outputs=[input_image, inpaint_editor, strength],
+            outputs=[input_image, inpaint_editor, inpaint_editor_help, strength],
         )
         run_sd_button.click(
             run_sd,
