@@ -1,0 +1,500 @@
+# Minimal Local SD1.5 Toolkit
+
+This is a small local toolkit built around the stack you described:
+
+- SD1.5 for `txt2img`, `img2img`, and mask-based inpainting
+- Optional ControlNet for stricter structure control
+- LaMa for clean object removal
+- Real-ESRGAN for upscaling, with optional GFPGAN for faces
+
+The goal here is simple, reliable local use on:
+
+- RTX 4060 Mobile 8GB
+- RTX 2070 Super 8GB
+
+## What is included
+
+- [sd_generate.py](/d:/sd_image/sd_generate.py): one CLI for `txt2img`, `img2img`, and `inpaint`
+- [lama_clean.py](/d:/sd_image/lama_clean.py): LaMa-based clean erase
+- [upscale.py](/d:/sd_image/upscale.py): Real-ESRGAN upscaling with optional GFPGAN
+- [requirements.txt](/d:/sd_image/requirements.txt): Python dependencies
+
+## Why these choices
+
+- `diffusers` is the cleanest way to run SD1.5 locally in Python without a lot of extra project scaffolding.
+- SD1.5 remains a practical sweet spot for 8GB GPUs, especially for inpainting and edit loops.
+- ControlNet is supported, but kept optional because it adds VRAM pressure.
+- LaMa is separate because it is often better than diffusion when you want a clean erase without remodeling nearby content.
+- Real-ESRGAN is a dependable default upscaler, and tile mode matters on 8GB.
+
+## Python version
+
+Use Python `3.11` for the smoothest install.
+
+Do not use Python `3.13` for this setup unless you are ready to troubleshoot package compatibility yourself. On Windows, restoration packages like `realesrgan`, `gfpgan`, and some of their dependencies tend to behave better on `3.10` or `3.11`.
+
+## 1. Create the venv
+
+In PowerShell:
+
+```powershell
+cd d:\sd_image
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+```
+
+In Command Prompt (`cmd.exe`):
+
+```bat
+cd /d d:\sd_image
+py -3.11 -m venv .venv
+.\.venv\Scripts\activate.bat
+python -m pip install --upgrade pip setuptools wheel
+```
+
+If `py -3.11` does not work, install Python 3.11 64-bit first, then repeat the commands above.
+
+## 2. Install PyTorch first
+
+For both the 4060 Mobile and 2070 Super, the most practical choice is the CUDA 12.1 wheel:
+
+```powershell
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+You do not need a full local CUDA toolkit just to run these wheels, but your NVIDIA driver should be reasonably up to date.
+
+## 3. Install the remaining libraries
+
+```powershell
+pip install -r requirements.txt
+```
+
+## 4. First-run expectations
+
+The first time you run the scripts:
+
+- Diffusers models will download from Hugging Face into your local cache
+- Real-ESRGAN and GFPGAN weights will download into `weights/`
+- The first run is much slower than later runs
+
+Rough storage expectation:
+
+- SD1.5 base + inpainting + one ControlNet model: several GB
+- Upscaler weights: a few hundred MB
+
+## Recommended starting settings on 8GB VRAM
+
+Start here:
+
+- `512x512` or `640x640` for fastest iteration
+- `batch-size 1`
+- `steps 24-30`
+- `guidance 7-8`
+
+Usually workable:
+
+- `768` on the long side for `img2img` and `inpaint`
+- `--cpu-offload` when using ControlNet or larger resolutions
+
+If you hit CUDA OOM:
+
+- lower width/height
+- reduce batch size to `1`
+- add `--cpu-offload`
+- lower upscale tile size from `512` to `256`
+
+## Usage
+
+## Parameter guide
+
+This section explains the main parameters used by the scripts, their defaults, and what changing them does in practice.
+
+### `sd_generate.py`
+
+Common parameters:
+
+- `--prompt`
+  - Required
+  - Main text instruction for the image
+  - Better prompts usually improve composition, style, and subject clarity more than simply increasing steps
+
+- `--negative-prompt`
+  - Default: empty
+  - Tells the model what to avoid
+  - Useful for reducing artifacts like `blurry, low quality, extra fingers, distorted face`
+
+- `--steps`
+  - Default: `28`
+  - Number of denoising steps
+  - Lower values are faster but can lose detail
+  - Higher values can improve detail a bit, but gains usually flatten after about `30-40` on SD1.5
+  - Good range on 8GB: `24-32`
+
+- `--guidance`
+  - Default: `7.5`
+  - Classifier-free guidance scale
+  - Higher values force the model to follow the prompt more strictly
+  - Too low can feel weak or generic
+  - Too high can create oversharpening, strange textures, or less natural images
+  - Good range: `6.5-8.5`
+
+- `--seed`
+  - Default: random
+  - Controls repeatability
+  - Same seed + same settings gives a very similar result
+  - Change the seed when you want a different composition without rewriting the prompt
+
+- `--batch-size`
+  - Default: `1`
+  - Number of images generated in one run
+  - Higher values use more VRAM
+  - On 8GB GPUs, keep this at `1`
+
+- `--width`
+  - Default: none for `img2img`/`inpaint`, internally resolved
+  - Default behavior for `txt2img`: practical baseline if omitted
+  - Controls image width
+  - Higher width increases detail potential and VRAM use
+
+- `--height`
+  - Default: none for `img2img`/`inpaint`, internally resolved
+  - Default behavior for `txt2img`: practical baseline if omitted
+  - Controls image height
+  - Higher height increases detail potential and VRAM use
+
+- `--max-side`
+  - Default: `768`
+  - Used mainly for `img2img` and `inpaint` when width/height are not explicitly provided
+  - The script rescales the input so the longest side is at most this value
+  - Helps keep generation inside 8GB VRAM limits
+
+- `--cpu-offload`
+  - Default: off
+  - Moves more model memory management to CPU
+  - Useful when you are near VRAM limits
+  - Slower than staying fully on GPU, but often prevents OOM
+
+Mode-specific parameters:
+
+- `--input`
+  - Required for `img2img` and `inpaint`
+  - The source image to transform
+  - The script auto-resizes it to a practical working size unless you explicitly set width and height
+
+- `--strength`
+  - Default: `0.75`
+  - Used for `img2img` and `inpaint`
+  - Controls how much the model changes the input image
+  - Lower values like `0.25-0.45` preserve composition and details more closely
+  - Middle values like `0.5-0.75` are good for restyling and moderate edits
+  - High values like `0.8-0.95` allow major remodeling, but can drift more
+
+- `--mask`
+  - Required for `inpaint`
+  - White areas are editable, black areas are protected
+  - Clean masks with soft edge intent but crisp binary regions usually work best
+
+ControlNet parameters:
+
+- `--control-image`
+  - Default: off
+  - Enables ControlNet when supplied
+  - Use this when you need stronger structure control than prompt-only generation can provide
+
+- `--controlnet-model`
+  - Default: `lllyasviel/control_v11p_sd15_canny`
+  - Chooses the ControlNet type
+  - Different models expect different control inputs such as canny, depth, pose, or segmentation
+
+- `--control-scale`
+  - Default: `1.0`
+  - Strength of the structural conditioning
+  - Lower values give the model more freedom
+  - Higher values stick more closely to the control input
+  - Good range: `0.6-1.2`
+
+- `--control-preprocess`
+  - Default: `none`
+  - Current built-in options: `none`, `canny`
+  - `canny` automatically converts the control image into edge guidance for the default canny ControlNet
+
+Practical size guidance for 8GB:
+
+- `512x512`
+  - Safest and fastest
+  - Best for quick prompt iteration
+
+- `640x640` to `768x768`
+  - Good balance of quality and stability
+  - Often the best working range on 8GB
+
+- larger than `768` on the long side
+  - More likely to need `--cpu-offload`
+  - More likely to slow down heavily or hit OOM with ControlNet
+
+### `lama_clean.py`
+
+- `--input`
+  - Required
+  - Source image
+
+- `--mask`
+  - Required
+  - White = erase and fill
+  - Black = preserve
+
+- `--output`
+  - Required
+  - Save path
+
+Effect on output:
+
+- LaMa is usually better than diffusion for pure cleanup tasks
+- It is especially useful when you want to remove an object without changing unrelated content or restyling the whole image
+
+### `upscale.py`
+
+- `--input`
+  - Required
+  - Source image to upscale
+
+- `--output`
+  - Required
+  - Save path
+
+- `--outscale`
+  - Default: `4.0`
+  - Final upscale factor
+  - `2` gives a lighter upscale
+  - `4` is the main high-quality mode
+  - Larger scaling produces bigger files and takes longer
+
+- `--tile`
+  - Default: `512`
+  - Splits the image into tiles to fit into VRAM
+  - Lower tile values reduce VRAM pressure
+  - Lower tile values can be slower
+  - On 8GB GPUs:
+    - `512` is a good default
+    - `256` is safer if you hit OOM
+    - `0` disables tiling, which is usually not ideal on 8GB for larger images
+
+- `--face-enhance`
+  - Default: off
+  - Enables GFPGAN on faces
+  - Good for portraits and people
+  - Can make non-face scenes look less natural if used unnecessarily
+
+- `--weights-dir`
+  - Default: `weights`
+  - Folder where the Real-ESRGAN and GFPGAN weights are stored
+
+## Quick recommendations
+
+For the most common cases:
+
+- `txt2img`
+  - `steps 28`
+  - `guidance 7.5`
+  - `batch-size 1`
+  - start at `512` or `640`
+
+- `img2img`
+  - `strength 0.45-0.7` for controlled edits
+  - `strength 0.75-0.9` for more aggressive change
+
+- `inpaint`
+  - `strength 0.8-0.95` for replacing objects or regions
+  - use a clean binary mask
+
+- `ControlNet`
+  - turn on only when structure consistency matters
+  - use `control-scale 0.8-1.0` first
+  - add `--cpu-offload` on 8GB if needed
+
+- `upscale`
+  - `outscale 4`
+  - `tile 512`
+  - `tile 256` if memory gets tight
+
+### A. Text to image
+
+```powershell
+python .\sd_generate.py txt2img `
+  --prompt "cinematic portrait photo, natural window light, shallow depth of field" `
+  --width 640 `
+  --height 832 `
+  --steps 28 `
+  --guidance 7.5 `
+  --output .\outputs
+```
+
+What to expect:
+
+- A progress bar during denoising
+- Output PNGs saved under `outputs\`
+- First run downloads the model
+
+### B. Image to image
+
+```powershell
+python .\sd_generate.py img2img `
+  --input .\input\photo.png `
+  --prompt "clean studio product photo, soft shadows, realistic details" `
+  --strength 0.55 `
+  --steps 28 `
+  --output .\outputs
+```
+
+Notes:
+
+- Lower `--strength` preserves more of the original image
+- Higher `--strength` changes composition and texture more aggressively
+- If `--width` and `--height` are omitted, the script auto-resizes the input to a practical size for 8GB GPUs
+
+### C. Inpainting
+
+```powershell
+python .\sd_generate.py inpaint `
+  --input .\input\scene.png `
+  --mask .\input\scene_mask.png `
+  --prompt "replace the masked area with a wooden side table, realistic lighting, correct perspective" `
+  --strength 0.9 `
+  --steps 30 `
+  --output .\outputs
+```
+
+Mask rule:
+
+- white = editable region
+- black = preserve region
+
+This is the core generative editor path for add, remove, and replace work.
+
+### D. ControlNet with canny
+
+This script can auto-generate a canny control image from your input control image:
+
+```powershell
+python .\sd_generate.py txt2img `
+  --prompt "modern living room, realistic interior photo, daylight" `
+  --control-image .\input\room_structure.png `
+  --control-preprocess canny `
+  --controlnet-model lllyasviel/control_v11p_sd15_canny `
+  --control-scale 0.9 `
+  --width 768 `
+  --height 512 `
+  --cpu-offload `
+  --output .\outputs
+```
+
+For other ControlNet types, switch the model and provide a matching control image:
+
+- depth: `lllyasviel/control_v11f1p_sd15_depth`
+- openpose: `lllyasviel/control_v11p_sd15_openpose`
+- segmentation: `lllyasviel/control_v11p_sd15_seg`
+
+Important:
+
+- this project only auto-generates `canny`
+- for depth, pose, or segmentation, provide a precomputed matching control image
+- ControlNet raises VRAM use, so prefer `batch-size 1` and use `--cpu-offload` on 8GB
+
+### E. LaMa clean erase
+
+```powershell
+python .\lama_clean.py `
+  --input .\input\street.png `
+  --mask .\input\street_mask.png `
+  --output .\outputs\street_clean.png
+```
+
+Use this when you want clean object removal without diffusion changing unrelated areas.
+
+### F. Upscaling
+
+```powershell
+python .\upscale.py `
+  --input .\outputs\image.png `
+  --output .\outputs\image_upscaled.png `
+  --outscale 4 `
+  --tile 512
+```
+
+With face enhancement:
+
+```powershell
+python .\upscale.py `
+  --input .\outputs\portrait.png `
+  --output .\outputs\portrait_upscaled.png `
+  --outscale 4 `
+  --tile 512 `
+  --face-enhance
+```
+
+Notes:
+
+- `--tile 512` is a good default for 8GB
+- if you get OOM, try `--tile 256`
+- GFPGAN should be used mainly for face-heavy images
+
+## Practical workflow
+
+For most edits:
+
+1. Use `inpaint` for add, replace, or remodel operations.
+2. Use `lama_clean.py` first if you only want to remove an object cleanly.
+3. Use ControlNet only when perspective or pose drift becomes a real problem.
+4. Upscale at the end with `upscale.py`.
+
+## Simple file layout
+
+You can organize your images like this:
+
+```text
+d:\sd_image
+├── .venv
+├── input
+├── outputs
+├── weights
+├── lama_clean.py
+├── sd_generate.py
+├── upscale.py
+├── requirements.txt
+└── README.md
+```
+
+## Troubleshooting
+
+### CUDA out of memory
+
+- add `--cpu-offload`
+- lower resolution
+- use only one image at a time
+- reduce upscale tile size
+
+### Hugging Face model access issues
+
+If a model requires login or license acceptance:
+
+```powershell
+pip install "huggingface_hub[cli]"
+huggingface-cli login
+```
+
+### Slow first generation
+
+Normal on first run. The models are downloading and being cached.
+
+## Verified design assumptions
+
+This setup is intentionally conservative:
+
+- SD1.5 rather than a heavier local model family
+- no xFormers requirement, because that often complicates Windows installs
+- one unified SD script instead of many wrappers
+- generic ControlNet support, but only automatic canny preprocessing built in
+
+That keeps the project small while still covering the workflows you asked for.

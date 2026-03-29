@@ -1,0 +1,4 @@
+/.venv
+/gfpgan
+/weights
+/__pycache__
